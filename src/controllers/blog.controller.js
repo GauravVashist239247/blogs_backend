@@ -36,13 +36,72 @@ const createBlog = async (req, res) => {
  */
 const getAllBlogs = async (req, res) => {
   try {
-    const blogs = await Blog.find({ status: "published" })
-      .populate("author", "name email")
-      .populate("category", "name")
-      .sort({ createdAt: -1 });
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+    const search = req.query.search || "";
+    const category = req.query.category;
+
+    let matchStage = { status: "published" };
+
+    if (search) {
+      matchStage.title = { $regex: search, $options: "i" };
+    }
+
+    if (category) {
+      matchStage.category = new mongoose.Types.ObjectId(category);
+    }
+
+    const blogs = await Blog.aggregate([
+      { $match: matchStage },
+
+      {
+        $lookup: {
+          from: "users",
+          localField: "author",
+          foreignField: "_id",
+          as: "author",
+        },
+      },
+      { $unwind: "$author" },
+
+      {
+        $lookup: {
+          from: "categories",
+          localField: "category",
+          foreignField: "_id",
+          as: "category",
+        },
+      },
+      { $unwind: { path: "$category", preserveNullAndEmptyArrays: true } },
+
+      {
+        $addFields: {
+          likesCount: { $size: "$likes" },
+        },
+      },
+
+      { $sort: { createdAt: -1 } },
+      { $skip: skip },
+      { $limit: limit },
+
+      {
+        $project: {
+          title: 1,
+          slug: 1,
+          content: 1,
+          views: 1,
+          likesCount: 1,
+          createdAt: 1,
+          "author.name": 1,
+          "category.name": 1,
+        },
+      },
+    ]);
 
     res.status(200).json({
       success: true,
+      page,
       count: blogs.length,
       blogs,
     });
@@ -54,23 +113,53 @@ const getAllBlogs = async (req, res) => {
 /**
  * GET SINGLE BLOG BY SLUG
  * Public
- */
-const getBlogBySlug = async (req, res) => {
+ */ const getBlogBySlug = async (req, res) => {
   try {
-    const blog = await Blog.findOne({ slug: req.params.slug })
-      .populate("author", "name")
-      .populate("category", "name");
+    const blog = await Blog.aggregate([
+      { $match: { slug: req.params.slug } },
 
-    if (!blog)
+      {
+        $lookup: {
+          from: "users",
+          let: { authorId: "$author" },
+          pipeline: [
+            { $match: { $expr: { $eq: ["$_id", "$$authorId"] } } },
+            { $project: { password: 0 } }, // ✅ remove password
+          ],
+          as: "author",
+        },
+      },
+      { $unwind: "$author" },
+
+      {
+        $lookup: {
+          from: "categories",
+          localField: "category",
+          foreignField: "_id",
+          as: "category",
+        },
+      },
+      { $unwind: { path: "$category", preserveNullAndEmptyArrays: true } },
+
+      {
+        $addFields: {
+          likesCount: { $size: "$likes" },
+        },
+      },
+    ]);
+
+    if (!blog.length) {
       return res
         .status(404)
         .json({ success: false, message: "Blog not found" });
+    }
 
-    // increase views
-    blog.views += 1;
-    await blog.save();
+    await Blog.updateOne({ slug: req.params.slug }, { $inc: { views: 1 } });
 
-    res.status(200).json({ success: true, blog });
+    res.status(200).json({
+      success: true,
+      blog: blog[0],
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -80,6 +169,24 @@ const getBlogBySlug = async (req, res) => {
  * UPDATE BLOG
  * Author (own blog) / Admin
  */
+
+const getAllBlogsById = async (req, res) => {
+  try {
+    let blog = await Blog.findById(req.params.id);
+
+    if (!blog)
+      return res
+        .status(404)
+        .json({ success: false, message: "Blog not found" });
+
+    return res
+      .status(201)
+      .json({ success: true, message: "Blog found", data: blog });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
 const updateBlog = async (req, res) => {
   try {
     let blog = await Blog.findById(req.params.id);
@@ -179,11 +286,63 @@ const toggleLikeBlog = async (req, res) => {
  */
 const getBlogsByAuthor = async (req, res) => {
   try {
-    const blogs = await Blog.find({ author: req.user.id }).sort({
-      createdAt: -1,
-    });
+    const authorId = new mongoose.Types.ObjectId(req.user.id);
 
-    res.status(200).json({ success: true, blogs });
+    const blogs = await Blog.aggregate([
+      { $match: { author: authorId } },
+
+      {
+        $addFields: {
+          likesCount: { $size: "$likes" },
+        },
+      },
+
+      { $sort: { createdAt: -1 } },
+    ]);
+
+    const stats = await Blog.aggregate([
+      { $match: { author: authorId } },
+      {
+        $group: {
+          _id: null,
+          totalBlogs: { $sum: 1 },
+          totalViews: { $sum: "$views" },
+          totalLikes: { $sum: { $size: "$likes" } },
+        },
+      },
+    ]);
+
+    res.status(200).json({
+      success: true,
+      stats: stats[0] || {
+        totalBlogs: 0,
+        totalViews: 0,
+        totalLikes: 0,
+      },
+      blogs,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+const getBlogStats = async (req, res) => {
+  try {
+    const stats = await Blog.aggregate([
+      {
+        $group: {
+          _id: "$status",
+          totalBlogs: { $sum: 1 },
+          totalViews: { $sum: "$views" },
+          totalLikes: { $sum: { $size: "$likes" } },
+        },
+      },
+    ]);
+
+    res.status(200).json({
+      success: true,
+      stats,
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -197,4 +356,6 @@ module.exports = {
   deleteBlog,
   toggleLikeBlog,
   getBlogsByAuthor,
+  getBlogStats,
+  getAllBlogsById,
 };
