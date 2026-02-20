@@ -350,7 +350,6 @@ const getBlogStats = async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 };
-
 const searchBlogs = async (req, res) => {
   try {
     const {
@@ -362,13 +361,15 @@ const searchBlogs = async (req, res) => {
       limit = 10,
     } = req.query;
 
-    const skip = (page - 1) * limit;
+    const pageNumber = parseInt(page) || 1;
+    const limitNumber = parseInt(limit) || 10;
+    const skip = (pageNumber - 1) * limitNumber;
 
     let matchStage = {
       status: "published",
     };
-
-    // 🔍 Search by title or content
+    console.log("search keyword", keyword);
+    // 🔍 Keyword search
     if (keyword) {
       matchStage.$or = [
         { title: { $regex: keyword, $options: "i" } },
@@ -376,26 +377,20 @@ const searchBlogs = async (req, res) => {
       ];
     }
 
-    // 📂 Filter by category
-    if (category) {
+    // 📂 Category filter
+    if (category && mongoose.Types.ObjectId.isValid(category)) {
       matchStage.category = new mongoose.Types.ObjectId(category);
     }
 
-    // 🏷 Filter by tag
+    // 🏷 Tag filter
     if (tag) {
       matchStage.tags = { $in: [tag] };
     }
 
-    // 🔄 Sorting logic
-    let sortStage = { createdAt: -1 }; // default latest
+    let sortStage = { createdAt: -1 };
 
-    if (sort === "views") {
-      sortStage = { views: -1 };
-    }
-
-    if (sort === "likes") {
-      sortStage = { likesCount: -1 };
-    }
+    if (sort === "views") sortStage = { views: -1 };
+    if (sort === "likes") sortStage = { likesCount: -1 };
 
     const blogs = await Blog.aggregate([
       { $match: matchStage },
@@ -428,13 +423,14 @@ const searchBlogs = async (req, res) => {
 
       { $sort: sortStage },
       { $skip: skip },
-      { $limit: parseInt(limit) },
+      { $limit: limitNumber },
 
       {
         $project: {
           title: 1,
           slug: 1,
           views: 1,
+          image: 1,
           likesCount: 1,
           createdAt: 1,
           "author.name": 1,
@@ -443,14 +439,18 @@ const searchBlogs = async (req, res) => {
       },
     ]);
 
-    // 🔢 Total count (for pagination)
-    const total = await Blog.countDocuments(matchStage);
+    const totalResult = await Blog.aggregate([
+      { $match: matchStage },
+      { $count: "total" },
+    ]);
+
+    const total = totalResult[0]?.total || 0;
 
     res.status(200).json({
       success: true,
       total,
-      page: parseInt(page),
-      totalPages: Math.ceil(total / limit),
+      page: pageNumber,
+      totalPages: Math.ceil(total / limitNumber),
       blogs,
     });
   } catch (error) {
