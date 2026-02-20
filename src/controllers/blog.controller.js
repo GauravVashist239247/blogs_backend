@@ -92,6 +92,7 @@ const getAllBlogs = async (req, res) => {
           slug: 1,
           content: 1,
           views: 1,
+          image: 1,
           likesCount: 1,
           createdAt: 1,
           "author.name": 1,
