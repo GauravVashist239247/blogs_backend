@@ -9,49 +9,49 @@ const {
   deleteBlog,
   toggleLikeBlog,
   getBlogsByAuthor,
-  getBlogStats,
   getAllBlogsById,
+  searchBlogs,
 } = require("../controllers/blog.controller");
 
 const { protect } = require("../middleware/auth.middleware");
 const { authorizeRoles } = require("../middleware/role.middleware");
+const upload = require("../middleware/upload.middleware");
 
-/**
- * PUBLIC ROUTES
- */
+// Create blog
+router.post(
+  "/",
+  protect,
+  upload.single("image"),
+  authorizeRoles("admin", "author"),
+  createBlog,
+);
+
+// Get all blogs
 router.get("/", getAllBlogs);
+
+// Search blogs (clean REST way)
+router.get("/search", searchBlogs);
+
 router.get("/id/:id", getAllBlogsById);
 
+// Get blog by slug
 router.get("/:slug", getBlogBySlug);
-router.get("/admin/stats", protect, authorizeRoles("admin"), getBlogStats);
 
-/**
- * AUTHOR / ADMIN ROUTES
- */
-router.post("/", protect, authorizeRoles("author", "admin"), createBlog);
+// Update blog
+router.patch("/:id", protect, authorizeRoles("admin", "author"), updateBlog);
 
-router.patch("/:id", protect, authorizeRoles("author", "admin"), updateBlog);
+// Delete blog
+router.delete("/:id", protect, authorizeRoles("admin", "author"), deleteBlog);
 
-router.delete("/:id", protect, authorizeRoles("author", "admin"), deleteBlog);
+// Like blog
+router.put("/like/:id", protect, toggleLikeBlog);
 
-/**
- * AUTHOR DASHBOARD
- */
+// Author dashboard
 router.get(
   "/author/me",
   protect,
-  authorizeRoles("author", "admin"),
+  authorizeRoles("admin", "author"),
   getBlogsByAuthor,
-);
-
-/**
- * READER ACTION
- */
-router.put(
-  "/like/:id",
-  protect,
-  authorizeRoles("reader", "author", "admin"),
-  toggleLikeBlog,
 );
 
 module.exports = router;

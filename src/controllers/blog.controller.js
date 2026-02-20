@@ -18,6 +18,7 @@ const createBlog = async (req, res) => {
       status,
       author: req.user.id, // from auth middleware
       coverImage: req.file?.path,
+      image: req.file ? req.file.path : null,
     });
 
     res.status(201).json({
@@ -113,7 +114,8 @@ const getAllBlogs = async (req, res) => {
 /**
  * GET SINGLE BLOG BY SLUG
  * Public
- */ const getBlogBySlug = async (req, res) => {
+ */
+const getBlogBySlug = async (req, res) => {
   try {
     const blog = await Blog.aggregate([
       { $match: { slug: req.params.slug } },
@@ -348,6 +350,113 @@ const getBlogStats = async (req, res) => {
   }
 };
 
+const searchBlogs = async (req, res) => {
+  try {
+    const {
+      keyword = "",
+      category,
+      tag,
+      sort = "latest",
+      page = 1,
+      limit = 10,
+    } = req.query;
+
+    const skip = (page - 1) * limit;
+
+    let matchStage = {
+      status: "published",
+    };
+
+    // 🔍 Search by title or content
+    if (keyword) {
+      matchStage.$or = [
+        { title: { $regex: keyword, $options: "i" } },
+        { content: { $regex: keyword, $options: "i" } },
+      ];
+    }
+
+    // 📂 Filter by category
+    if (category) {
+      matchStage.category = new mongoose.Types.ObjectId(category);
+    }
+
+    // 🏷 Filter by tag
+    if (tag) {
+      matchStage.tags = { $in: [tag] };
+    }
+
+    // 🔄 Sorting logic
+    let sortStage = { createdAt: -1 }; // default latest
+
+    if (sort === "views") {
+      sortStage = { views: -1 };
+    }
+
+    if (sort === "likes") {
+      sortStage = { likesCount: -1 };
+    }
+
+    const blogs = await Blog.aggregate([
+      { $match: matchStage },
+
+      {
+        $addFields: {
+          likesCount: { $size: "$likes" },
+        },
+      },
+
+      {
+        $lookup: {
+          from: "users",
+          localField: "author",
+          foreignField: "_id",
+          as: "author",
+        },
+      },
+      { $unwind: "$author" },
+
+      {
+        $lookup: {
+          from: "categories",
+          localField: "category",
+          foreignField: "_id",
+          as: "category",
+        },
+      },
+      { $unwind: { path: "$category", preserveNullAndEmptyArrays: true } },
+
+      { $sort: sortStage },
+      { $skip: skip },
+      { $limit: parseInt(limit) },
+
+      {
+        $project: {
+          title: 1,
+          slug: 1,
+          views: 1,
+          likesCount: 1,
+          createdAt: 1,
+          "author.name": 1,
+          "category.name": 1,
+        },
+      },
+    ]);
+
+    // 🔢 Total count (for pagination)
+    const total = await Blog.countDocuments(matchStage);
+
+    res.status(200).json({
+      success: true,
+      total,
+      page: parseInt(page),
+      totalPages: Math.ceil(total / limit),
+      blogs,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
 module.exports = {
   createBlog,
   getAllBlogs,
@@ -358,4 +467,5 @@ module.exports = {
   getBlogsByAuthor,
   getBlogStats,
   getAllBlogsById,
+  searchBlogs,
 };
